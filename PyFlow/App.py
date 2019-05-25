@@ -1,34 +1,52 @@
 import os
 import sys
 import subprocess
+import json
+from time import clock
+import pkgutil
+import uuid
+
 from Qt import QtGui
 from Qt import QtCore
 from Qt.QtWidgets import QMainWindow
 from Qt.QtWidgets import QApplication
 from Qt.QtWidgets import QStyleFactory
+from Qt.QtWidgets import QSizePolicy
 from Qt.QtWidgets import QTextEdit
 from Qt.QtWidgets import QMessageBox
 from Qt.QtWidgets import QAction
+from Qt.QtWidgets import QMenu
 from Qt.QtWidgets import QInputDialog
 from Qt.QtWidgets import QHBoxLayout
 from Qt.QtWidgets import QUndoView
-from Core.Widget import GraphWidget
-from Core.Widget import Direction
-from Core.Widget import NodesBox
-from Core.VariablesWidget import VariablesWidget
-import Nodes
-import Commands
-import FunctionLibraries
-import Pins
-from UI import GraphEditor_ui
-import json
-from time import clock
+from Qt.QtWidgets import QToolButton
+from Qt.QtWidgets import QPushButton
+from Qt.QtWidgets import QSpacerItem
+from Qt.QtWidgets import QFileDialog
+from Qt.QtWidgets import QDockWidget
+
+from PyFlow import Packages
+from PyFlow.UI.Canvas.Canvas import Canvas
+from PyFlow.Core.Common import Direction
+from PyFlow.UI.Canvas.UICommon import clearLayout
+from PyFlow.Core.GraphBase import GraphBase
+from PyFlow.Core.GraphManager import GraphManager
+from PyFlow.UI.Views.NodeBox import NodesBox
+from PyFlow.UI import RESOURCES_DIR
+from PyFlow.UI.Canvas.UINodeBase import getUINodeInstance
+from PyFlow.UI.Widgets import GraphEditor_ui
+from PyFlow.UI.Utils.StyleSheetEditor import StyleSheetEditor
+from PyFlow.UI.Tool.Tool import ShelfTool, DockTool
+from PyFlow.Packages.PyflowBase.Tools.PropertiesTool import PropertiesTool
+from PyFlow.UI.Tool import GET_TOOLS
+from PyFlow import INITIALIZE
+from PyFlow.UI.ContextMenuGenerator import ContextMenuGenerator
 
 
 FILE_DIR = os.path.abspath(os.path.dirname(__file__))
-SETTINGS_PATH = os.path.join(FILE_DIR, "appConfig.ini")
+SETTINGS_PATH = os.path.join(FILE_DIR, "config.ini")
 STYLE_PATH = os.path.join(FILE_DIR, "style.css")
-EDITOR_TARGET_FPS = 60
+EDITOR_TARGET_FPS = 120
 
 
 def open_file(filename):
@@ -47,270 +65,354 @@ class PluginType:
 
 
 def _implementPlugin(name, pluginType):
-    CommandTemplate = """from Qt.QtWidgets import QUndoCommand
+    pass
 
 
-class {0}(QUndoCommand):
-
-    def __init__(self):
-        super({0}, self).__init__()
-
-    def undo(self):
-        pass
-
-    def redo(self):
-        pass
-""".format(name)
-
-    NodeTemplate = """from ..Core.AbstractGraph import *
-from ..Core.Settings import *
-from ..Core import Node
-
-
-class {0}(Node):
-    def __init__(self, name, graph):
-        super({0}, self).__init__(name, graph)
-        self.inp0 = self.addInputPin('in0', DataTypes.Bool)
-        self.out0 = self.addOutputPin('out0', DataTypes.Bool)
-        pinAffects(self.inp0, self.out0)
-
-    @staticmethod
-    def pinTypeHints():
-        '''
-            used by nodebox to suggest supported pins
-            when drop wire from pin into empty space
-        '''
-        return {{'inputs': [DataTypes.Bool], 'outputs': [DataTypes.Bool]}}
-
-    @staticmethod
-    def category():
-        '''
-            used by nodebox to place in tree
-            to make nested one - use '|' like this ( 'CatName|SubCatName' )
-        '''
-        return 'Common'
-
-    @staticmethod
-    def keywords():
-        '''
-            used by nodebox filter while typing
-        '''
-        return []
-
-    @staticmethod
-    def description():
-        '''
-            used by property view and node box widgets
-        '''
-        return 'default description'
-
-    def compute(self):
-        '''
-            1) get data from inputs
-            2) do stuff
-            3) put data to outputs
-            4) call output execs
-        '''
-
-        str_data = self.inp0.getData()
-        try:
-            self.out0.setData(str_data.upper())
-        except Exception as e:
-            print(e)
-""".format(name)
-
-    LibraryTemplate = """from ..Core.FunctionLibrary import *
-# import types stuff
-from ..Core.AGraphCommon import *
-# import stuff you need
-# ...
-
-
-class {0}(FunctionLibraryBase):
-    '''doc string for {0}'''
-    def __init__(self):
-        super({0}, self).__init__()
-
-    @staticmethod
-    @IMPLEMENT_NODE(returns=(DataTypes.Int, 0), meta={{'Category': 'CategoryName|SubCategory name', 'Keywords': ['+', 'append', 'sum']}})
-    def add(A=(DataTypes.Int, 0), B=(DataTypes.Int, 0)):
-        '''Sum of two ints.'''
-        return A + B
-
-    @staticmethod
-    @IMPLEMENT_NODE(returns=(DataTypes.Float, 0.0), meta={{'Category': 'CategoryName', 'Keywords': ['/']}})
-    def divide(A=(DataTypes.Int, 0), B=(DataTypes.Int, 0), result=(DataTypes.Reference, (DataTypes.Bool, False))):
-        '''Integer devision.'''
-        try:
-            d = A / B
-            result(True)
-            return d
-        except:
-            result(False)
-            return -1
-
-""".format(name)
-
-    PinTemplate = """from ..Core.Pin import PinWidgetBase
-from ..Core.AGraphCommon import *
-
-
-class {0}(PinWidgetBase):
-    '''doc string for {0}'''
-    def __init__(self, name, parent, dataType, direction, **kwargs):
-        super({0}, self).__init__(name, parent, dataType, direction, **kwargs)
-        self.setDefaultValue(False)
-
-    def supportedDataTypes(self):
-        return (DataTypes.Bool,)
-
-    @staticmethod
-    def color():
-        return Colors.Bool
-
-    @staticmethod
-    def pinDataTypeHint():
-        return DataTypes.Bool, False
-
-    def setData(self, data):
-        try:
-            self._data = bool(data)
-        except:
-            self._data = self.defaultValue()
-        PinWidgetBase.setData(self, self._data)
-""".format(name)
-
-    if pluginType == PluginType.pNode:
-        file_path = "{0}/{1}.py".format(Nodes.__path__[0], name)
-        existing_nodes = [n.split(".")[0] for n in os.listdir(Nodes.__path__[0]) if n.endswith(".py") and "__init__" not in n]
-
-        if name in existing_nodes:
-            print("[ERROR] Node {0} already exists! Chose another name".format(name))
-            return
-
-        # write to file. delete older if needed
-        with open(file_path, "wb") as f:
-            f.write(NodeTemplate)
-        print("[INFO] Node {0} been created.\nIn order to appear in node box, restart application.".format(name))
-        open_file(file_path)
-
-    if pluginType == PluginType.pCommand:
-        file_path = "{0}/{1}.py".format(Commands.__path__[0], name)
-        existing_commands = [c.split(".")[0] for c in os.listdir(Commands.__path__[0]) if c.endswith(".py") and "__init__" not in c]
-        if name in existing_commands:
-            print("[ERROR] Command {0} already exists! Chose another name".format(name))
-            return
-        # write to file. delete older if needed
-        with open(file_path, "wb") as f:
-            f.write(CommandTemplate)
-        print("[INFO] Command {0} been created.\n Restart application.".format(name))
-        open_file(file_path)
-
-    if pluginType == PluginType.pFunctionLibrary:
-        filePath = "{0}/{1}.py".format(FunctionLibraries.__path__[0], name)
-        existingLibs = [c.split(".")[0] for c in os.listdir(FunctionLibraries.__path__[0]) if c.endswith(".py") and "__init__" not in c]
-        if name in existingLibs:
-            print("[ERROR] Function library {0} already exists! Chose another name".format(name))
-            return
-        # write to file. delete older if needed
-        with open(filePath, "wb") as f:
-            f.write(LibraryTemplate)
-        print("[INFO] Function lib {0} been created.\n Restart application.".format(name))
-        open_file(filePath)
-
-    if pluginType == PluginType.pPin:
-        filePath = "{0}/{1}.py".format(Pins.__path__[0], name)
-        existingPins = [c.split(".")[0] for c in os.listdir(Pins.__path__[0]) if c.endswith(".py") and "__init__" not in c]
-        if name in existingPins:
-            print("[ERROR] Pin {0} already exists! Chose another name".format(name))
-            return
-        # write to file. delete older if needed
-        with open(filePath, "wb") as f:
-            f.write(PinTemplate)
-        print("[INFO] Pin {0} been created.\n Restart application.".format(name))
-        open_file(filePath)
+def getOrCreateMenu(menuBar, title):
+    for child in menuBar.findChildren(QMenu):
+        if child.title() == title:
+            return child
+    menu = QMenu(menuBar)
+    menu.setObjectName(title)
+    menu.setTitle(title)
+    return menu
 
 
 ## App itself
 class PyFlow(QMainWindow, GraphEditor_ui.Ui_MainWindow):
+    newFileExecuted = QtCore.Signal(bool)
+
     def __init__(self, parent=None):
         super(PyFlow, self).__init__(parent=parent)
         self.setupUi(self)
-        self.listViewUndoStack = QUndoView(self.dockWidgetContents_3)
-        self.listViewUndoStack.setObjectName("listViewUndoStack")
-        self.gridLayout_6.addWidget(self.listViewUndoStack, 0, 0, 1, 1)
+        self.setWindowIcon(QtGui.QIcon(RESOURCES_DIR + "/LogoBpApp.png"))
+        self._tools = set()
 
-        self.G = GraphWidget('root', self)
-        self.SceneLayout.addWidget(self.G)
+        self.styleSheetEditor = StyleSheetEditor()
+        self.graphManager = GraphManager()
+        self.canvasWidget = Canvas(self.graphManager, self)
+        self.canvasWidget.requestFillProperties.connect(self.onRequestFillProperties)
+        self.canvasWidget.requestClearProperties.connect(self.onRequestClearProperties)
+        self.graphManager.graphChanged.connect(self.updateGraphTreeLocation)
+        self.updateGraphTreeLocation()
+        self.SceneLayout.addWidget(self.canvasWidget)
 
-        self.actionVariables.triggered.connect(self.toggleVariables)
-        self.actionPlot_graph.triggered.connect(self.G.plot)
-        self.actionDelete.triggered.connect(self.on_delete)
-        self.actionPropertyView.triggered.connect(self.togglePropertyView)
-        self.actionScreenshot.triggered.connect(self.G.screenShot)
-        self.actionShortcuts.triggered.connect(self.shortcuts_info)
-        self.actionSave.triggered.connect(self.G.save)
-        self.actionLoad.triggered.connect(self.G.load)
-        self.actionSave_as.triggered.connect(self.G.save_as)
-        self.actionAlignLeft.triggered.connect(lambda: self.G.alignSelectedNodes(Direction.Left))
-        self.actionAlignUp.triggered.connect(lambda: self.G.alignSelectedNodes(Direction.Up))
-        self.actionAlignBottom.triggered.connect(lambda: self.G.alignSelectedNodes(Direction.Down))
-        self.actionAlignRight.triggered.connect(lambda: self.G.alignSelectedNodes(Direction.Right))
-        self.actionNew_Node.triggered.connect(lambda: self.newPlugin(PluginType.pNode))
-        self.actionNew_Command.triggered.connect(lambda: self.newPlugin(PluginType.pCommand))
-        self.actionFunction_Library.triggered.connect(lambda: self.newPlugin(PluginType.pFunctionLibrary))
-        self.actionNew_pin.triggered.connect(lambda: self.newPlugin(PluginType.pPin))
-        self.actionHistory.triggered.connect(self.toggleHistory)
-        self.actionNew.triggered.connect(self.G.new_file)
-        self.dockWidgetUndoStack.setVisible(False)
+        rxLettersAndNumbers = QtCore.QRegExp('^[a-zA-Z0-9]*$')
+        nameValidator = QtGui.QRegExpValidator(rxLettersAndNumbers, self.leCompoundName)
+        self.leCompoundName.setValidator(nameValidator)
+        self.leCompoundName.returnPressed.connect(self.onActiveCompoundNameAccepted)
+
+        rxLetters = QtCore.QRegExp('^[a-zA-Z]*$')
+        categoryValidator = QtGui.QRegExpValidator(rxLetters, self.leCompoundCategory)
+        self.leCompoundCategory.setValidator(categoryValidator)
+        self.leCompoundCategory.returnPressed.connect(self.onActiveCompoundCategoryAccepted)
 
         self.setMouseTracking(True)
-
-        self.variablesWidget = VariablesWidget(self, self.G)
-        self.leftDockGridLayout.addWidget(self.variablesWidget)
 
         self._lastClock = 0.0
         self.fps = EDITOR_TARGET_FPS
         self.tick_timer = QtCore.QTimer()
-        self.tick_timer.timeout.connect(self.mainLoop)
+        self._current_file_name = 'Untitled'
+        self.populateMenu()
+        self.dockWidgetNodeView.setVisible(True)
+
+    def populateMenu(self):
+        fileMenu = self.menuBar.addMenu("File")
+        newFileAction = fileMenu.addAction("New file")
+        newFileAction.setIcon(QtGui.QIcon(RESOURCES_DIR + "/new_file_icon.png"))
+        newFileAction.triggered.connect(self.newFile)
+
+        loadAction = fileMenu.addAction("Load")
+        loadAction.setIcon(QtGui.QIcon(RESOURCES_DIR + "/folder_open_icon.png"))
+        loadAction.triggered.connect(self.load)
+
+        saveAction = fileMenu.addAction("Save")
+        saveAction.setIcon(QtGui.QIcon(RESOURCES_DIR + "/save_icon.png"))
+        saveAction.triggered.connect(self.save)
+
+        saveAsAction = fileMenu.addAction("Save as")
+        saveAsAction.setIcon(QtGui.QIcon(RESOURCES_DIR + "/save_as_icon.png"))
+        saveAsAction.triggered.connect(lambda: self.save(True))
+
+        editMenu = self.menuBar.addMenu("Edit")
+        preferencesAction = editMenu.addAction("Preferences")
+        preferencesAction.setIcon(QtGui.QIcon(RESOURCES_DIR + "/options_icon.png"))
+
+        helpMenu = self.menuBar.addMenu("Help")
+        shortcutsAction = helpMenu.addAction("Shortcuts")
+        shortcutsAction.setIcon(QtGui.QIcon(RESOURCES_DIR + "/shortcuts_icon.png"))
+        shortcutsAction.triggered.connect(self.shortcuts_info)
+
+    def registerToolInstance(self, instance):
+        """Registers tool instance reference
+
+        This needed to prevent classes from being garbage collected and to save widgets state
+
+        Args:
+
+            instance (ToolBase): Tool to be registered
+        """
+        self._tools.add(instance)
+
+    def unregisterToolInstance(self, instance):
+        if instance in self._tools:
+            self._tools.remove(instance)
+
+    def onRequestFillProperties(self, propertiesFillDelegate):
+        for toolInstance in self._tools:
+            if isinstance(toolInstance, PropertiesTool):
+                toolInstance.clear()
+                toolInstance.assignPropertiesWidget(propertiesFillDelegate)
+
+    def onRequestClearProperties(self):
+        for toolInstance in self._tools:
+            if isinstance(toolInstance, PropertiesTool):
+                toolInstance.clear()
+
+    def getToolbar(self):
+        return self.toolBar
+
+    def getCanvas(self):
+        return self.canvasWidget
+
+    def setCompoundPropertiesWidgetVisible(self, bVisible):
+        if bVisible:
+            self.CompoundPropertiesWidget.show()
+            self.leCompoundName.setText(self.graphManager.activeGraph().name)
+            self.leCompoundCategory.setText(self.graphManager.activeGraph().category)
+        else:
+            self.CompoundPropertiesWidget.hide()
+
+    def keyPressEvent(self, event):
+        modifiers = event.modifiers()
+        if all([event.key() == QtCore.Qt.Key_N, modifiers == QtCore.Qt.ControlModifier]):
+            self.newFile()
+        if all([event.key() == QtCore.Qt.Key_S, modifiers == QtCore.Qt.ControlModifier]):
+            self.save()
+        if all([event.key() == QtCore.Qt.Key_O, modifiers == QtCore.Qt.ControlModifier]):
+            self.load()
+        if all([event.key() == QtCore.Qt.Key_S, modifiers == QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier]):
+            self.save_as()
+
+    def loadFromData(self, data, fpath=""):
+        self.newFile(keepRoot=False)
+        # load raw data
+        self.graphManager.deserialize(data)
+        # create ui nodes
+        for graph in self.graphManager.getAllGraphs():
+            self.canvasWidget.createWrappersForGraph(graph)
+        self.graphManager.selectRootGraph()
+
+    def load(self):
+        name_filter = "Graph files (*.json)"
+        savepath = QFileDialog.getOpenFileName(filter=name_filter)
+        if type(savepath) in [tuple, list]:
+            fpath = savepath[0]
+        else:
+            fpath = savepath
+        if not fpath == '':
+            with open(fpath, 'r') as f:
+                data = json.load(f)
+                self.loadFromData(data, fpath)
+
+    def save(self, save_as=False):
+        if save_as:
+            name_filter = "Graph files (*.json)"
+            savepath = QFileDialog.getSaveFileName(filter=name_filter)
+            if type(savepath) in [tuple, list]:
+                pth = savepath[0]
+            else:
+                pth = savepath
+            if not pth == '':
+                self._current_file_name = pth
+            else:
+                self._current_file_name = "Untitled"
+        else:
+            if not os.path.isfile(self._current_file_name):
+                name_filter = "Graph files (*.json)"
+                savepath = QFileDialog.getSaveFileName(filter=name_filter)
+                if type(savepath) in [tuple, list]:
+                    pth = savepath[0]
+                else:
+                    pth = savepath
+                if not pth == '':
+                    self._current_file_name = pth
+                else:
+                    self._current_file_name = "Untitled"
+
+        if self._current_file_name in ["", "Untitled"]:
+            return
+
+        if not self._current_file_name == '':
+            with open(self._current_file_name, 'w') as f:
+                saveData = self.graphManager.serialize()
+                json.dump(saveData, f, indent=4)
+
+            print(str("// saved: '{0}'".format(self._current_file_name)))
+
+    def newFile(self, keepRoot=True):
+        self.tick_timer.stop()
+        self.tick_timer.timeout.disconnect()
+
+        # broadcast
+        self.graphManager.clear(keepRoot=keepRoot)
+        self.newFileExecuted.emit(keepRoot)
+        self._current_file_name = 'Untitled'
+        self.onRequestClearProperties()
+
+        self.startMainLoop()
+
+    def updateGraphTreeLocation(self, *args, **kwargs):
+        location = self.canvasWidget.location()
+        clearLayout(self.layoutGraphPath)
+        spacerItem = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.layoutGraphPath.addItem(spacerItem)
+        for folderName in location:
+            index = self.layoutGraphPath.count() - 1
+            btn = QPushButton(folderName)
+
+            def onClicked(checked, name=None):
+                self.canvasWidget.stepToCompound(name)
+
+            btn.clicked.connect(lambda chk=False, name=folderName: onClicked(chk, name))
+            self.layoutGraphPath.insertWidget(index, btn)
+
+        self.setCompoundPropertiesWidgetVisible(self.graphManager.activeGraph().depth() > 1)
+
+    def onActiveCompoundNameAccepted(self):
+        newName = self.graphManager.getUniqName(self.leCompoundName.text())
+        self.graphManager.activeGraph().name = newName
+        self.leCompoundName.blockSignals(True)
+        self.leCompoundName.setText(newName)
+        self.leCompoundName.blockSignals(False)
+        self.updateGraphTreeLocation()
+
+    def onActiveCompoundCategoryAccepted(self):
+        newCategoryName = self.leCompoundCategory.text()
+        self.graphManager.activeGraph().category = newCategoryName
 
     def startMainLoop(self):
+        self.tick_timer.timeout.connect(self.mainLoop)
         self.tick_timer.start(1000 / EDITOR_TARGET_FPS)
+
+    def stopMainLoop(self):
+        self.tick_timer.stop()
+        self.tick_timer.timeout.disconnect()
 
     def mainLoop(self):
         deltaTime = clock() - self._lastClock
         ds = (deltaTime * 1000.0)
         if ds > 0:
             self.fps = int(1000.0 / ds)
-        self.G.Tick(deltaTime)
+
+        # Tick all graphs
+        # each graph will tick owning raw nodes
+        # each raw node will tick it's ui wrapper if it exists
+        self.graphManager.Tick(deltaTime)
+
+        # Tick canvas. Update ui only stuff such animation etc.
+        self.canvasWidget.Tick(deltaTime)
+
         self._lastClock = clock()
 
     def createPopupMenu(self):
         pass
 
     def toggleHistory(self):
-        self.dockWidgetUndoStack.setVisible(not self.dockWidgetUndoStack.isVisible())
+        self.dockWidgetUndoStack.setVisible(
+            not self.dockWidgetUndoStack.isVisible())
 
     def newPlugin(self, pluginType):
-        name, result = QInputDialog.getText(self, 'Plugin name', 'Enter plugin name')
+        name, result = QInputDialog.getText(
+            self, 'Plugin name', 'Enter plugin name')
         if result:
             _implementPlugin(name, pluginType)
+
+    def getToolClassByName(self, packageName, toolName, toolClass=DockTool):
+        registeredTools = GET_TOOLS()
+        for ToolClass in registeredTools[packageName]:
+            if issubclass(ToolClass, toolClass):
+                if ToolClass.name() == toolName:
+                    return ToolClass
+        return None
+
+    def createToolInstanceByClass(self, packageName, toolName, toolClass=DockTool):
+        registeredTools = GET_TOOLS()
+        for ToolClass in registeredTools[packageName]:
+            if issubclass(ToolClass, toolClass):
+                if ToolClass.name() == toolName:
+                    return ToolClass()
+        return None
+
+    def invokeDockToolByName(self, packageName, name, settings=None):
+        # invokeDockToolByName Invokes dock tool by tool name and package name
+        # If settings provided QMainWindow::restoreDockWidget will be called instead QMainWindow::addDockWidget
+        toolClass = self.getToolClassByName(packageName, name, DockTool)
+        isSingleton = toolClass.isSingleton()
+        if isSingleton:
+            # check if already registered
+            if name in [t.name() for t in self._tools]:
+                for tool in self._tools:
+                    if tool.name() == name:
+                        # Highlight window
+                        print("highlight", tool.uniqueName())
+                return
+        ToolInstance = self.createToolInstanceByClass(packageName, name, DockTool)
+        if ToolInstance:
+            self.registerToolInstance(ToolInstance)
+            if settings is not None:
+                ToolInstance.restoreState(settings)
+                if not self.restoreDockWidget(ToolInstance):
+                    # handle if ui state was not restored
+                    pass
+            else:
+                self.addDockWidget(ToolInstance.defaultDockArea(), ToolInstance)
+            ToolInstance.setCanvas(self.canvasWidget)
+            ToolInstance.onShow()
+        return ToolInstance
 
     def closeEvent(self, event):
         self.tick_timer.stop()
         self.tick_timer.timeout.disconnect()
-        self.G.shoutDown()
+        self.canvasWidget.shoutDown()
         # save editor config
         settings = QtCore.QSettings(SETTINGS_PATH, QtCore.QSettings.IniFormat, self)
+        # clear file each time to capture opened dock tools
+        settings.clear()
+        settings.sync()
+
         settings.beginGroup('Editor')
         settings.setValue("geometry", self.saveGeometry())
-        settings.setValue("windowState", self.saveState())
+        settings.setValue("state", self.saveState())
         settings.endGroup()
+
+        # save tools state
+        settings.beginGroup('Tools')
+        for tool in self._tools:
+            if isinstance(tool, ShelfTool):
+                settings.beginGroup("ShelfTools")
+                settings.beginGroup(tool.name())
+                tool.saveState(settings)
+                settings.endGroup()
+                settings.endGroup()
+            if isinstance(tool, DockTool):
+                settings.beginGroup("DockTools")
+                settings.beginGroup(tool.uniqueName())
+                tool.saveState(settings)
+                settings.endGroup()
+                settings.endGroup()
+            tool.onDestroy()
+        settings.endGroup()
+        settings.sync()
         QMainWindow.closeEvent(self, event)
 
-    def applySettings(self, settings):
-        self.restoreGeometry(settings.value('Editor/geometry'))
-        self.restoreState(settings.value('Editor/windowState'))
+    def editTheme(self):
+        self.styleSheetEditor.show()
+
+    def updateStyle(self):
+        pass
+        # if self.styleSheetEditor:
+        #    self.setStyleSheet(self.styleSheetEditor.getStyleSheet())
 
     def togglePropertyView(self):
         if self.dockWidgetNodeView.isVisible():
@@ -326,14 +428,21 @@ class PyFlow(QMainWindow, GraphEditor_ui.Ui_MainWindow):
 
     def shortcuts_info(self):
 
-        data = "Ctrl+Shift+N - togle node box\n"
+        data = "Tab - togle node box\n"
         data += "Ctrl+N - new file\n"
         data += "Ctrl+S - save\n"
         data += "Ctrl+Shift+S - save as\n"
         data += "Ctrl+O - open file\n"
-        data += "Ctrl+F - frame\n"
+        data += "F - frame selected\n"
+        data += "H - frame all\n"
         data += "C - comment selected nodes\n"
         data += "Delete - kill selected nodes\n"
+        data += "Ctrl+C - Copy\n"
+        data += "Ctrl+V - Paste\n"
+        data += "Alt+Drag - Duplicate\n"
+        data += "Ctrl+Z - Undo\n"
+        data += "Ctrl+Y - Redo\n"
+        data += "Alt+Click - Disconnect Pin\n"
         data += "Ctrl+Shift+ArrowLeft - Align left\n"
         data += "Ctrl+Shift+ArrowUp - Align Up\n"
         data += "Ctrl+Shift+ArrowRight - Align right\n"
@@ -341,65 +450,70 @@ class PyFlow(QMainWindow, GraphEditor_ui.Ui_MainWindow):
 
         QMessageBox.information(self, "Shortcuts", data)
 
-    def on_delete(self):
-        self.G.killSelectedNodes()
-
     @staticmethod
     def instance(parent=None):
-        settings = QtCore.QSettings(SETTINGS_PATH, QtCore.QSettings.IniFormat)
         instance = PyFlow(parent)
-        instance.applySettings(settings)
         instance.startMainLoop()
+        INITIALIZE()
+
+        # populate tools
+        canvas = instance.getCanvas()
+        toolbar = instance.getToolbar()
+
+        settings = QtCore.QSettings(SETTINGS_PATH, QtCore.QSettings.IniFormat)
+        instance.restoreGeometry(settings.value('Editor/geometry'))
+        instance.restoreState(settings.value('Editor/state'))
+        settings.beginGroup("Tools")
+        for packageName, registeredToolSet in GET_TOOLS().items():
+            for ToolClass in registeredToolSet:
+                if issubclass(ToolClass, ShelfTool):
+                    ToolInstance = ToolClass()
+                    # prevent to be garbage collected
+                    instance.registerToolInstance(ToolInstance)
+                    ToolInstance.setCanvas(canvas)
+                    action = QAction(instance)
+                    action.setIcon(ToolInstance.getIcon())
+                    action.setText(ToolInstance.name())
+                    action.setToolTip(ToolInstance.toolTip())
+                    action.setObjectName(ToolInstance.name())
+                    action.triggered.connect(ToolInstance.do)
+                    # check if context menu data available
+                    menuBuilder = ToolInstance.contextMenuBuilder()
+                    if menuBuilder:
+                        menuGenerator = ContextMenuGenerator(menuBuilder)
+                        menu = menuGenerator.generate()
+                        action.setMenu(menu)
+                    toolbar.addAction(action)
+
+                    # step to ShelfTools/ToolName group and pass settings inside
+                    settings.beginGroup("ShelfTools")
+                    settings.beginGroup(ToolClass.name())
+                    ToolInstance.restoreState(settings)
+                    settings.endGroup()
+                    settings.endGroup()
+
+                if issubclass(ToolClass, DockTool):
+                    menus = instance.menuBar.findChildren(QMenu)
+                    helpMenuAction = [m for m in menus if m.title() == "Help"][0].menuAction()
+                    toolsMenu = getOrCreateMenu(instance.menuBar, "Tools")
+                    instance.menuBar.insertMenu(helpMenuAction, toolsMenu)
+                    packageSubMenu = getOrCreateMenu(toolsMenu, packageName)
+                    toolsMenu.addMenu(packageSubMenu)
+                    showToolAction = packageSubMenu.addAction(ToolClass.name())
+                    icon = ToolClass.getIcon()
+                    if icon:
+                        showToolAction.setIcon(icon)
+                    showToolAction.triggered.connect(lambda pkgName=packageName, toolName=ToolClass.name(): instance.invokeDockToolByName(pkgName, toolName))
+
+                    settings.beginGroup("DockTools")
+                    childGroups = settings.childGroups()
+                    for dockToolGroupName in childGroups:
+                        # This dock tool data been saved on last shutdown
+                        settings.beginGroup(dockToolGroupName)
+                        if dockToolGroupName in [t.uniqueName() for t in instance._tools]:
+                            continue
+                        toolName = dockToolGroupName.split("::")[0]
+                        ToolInstance = instance.invokeDockToolByName(packageName, toolName, settings)
+                        settings.endGroup()
+                    settings.endGroup()
         return instance
-
-    @staticmethod
-    def hotReload():
-        reload(Pins)
-        reload(FunctionLibraries)
-        reload(Nodes)
-        Nodes._getClasses()
-        FunctionLibraries._getFunctions()
-
-
-if __name__ == '__main__':
-
-    app = QApplication(sys.argv)
-
-    dark_palette = app.palette()
-
-    dark_palette.setColor(QtGui.QPalette.Window, QtGui.QColor(53, 53, 53))
-    dark_palette.setColor(QtGui.QPalette.WindowText, QtCore.Qt.white)
-    dark_palette.setColor(QtGui.QPalette.Base, QtGui.QColor(25, 25, 25))
-    dark_palette.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor(53, 53, 53))
-    dark_palette.setColor(QtGui.QPalette.ToolTipBase, QtCore.Qt.white)
-    dark_palette.setColor(QtGui.QPalette.ToolTipText, QtCore.Qt.white)
-    dark_palette.setColor(QtGui.QPalette.Text, QtCore.Qt.black)
-    dark_palette.setColor(QtGui.QPalette.Button, QtGui.QColor(53, 53, 53))
-    dark_palette.setColor(QtGui.QPalette.ButtonText, QtCore.Qt.black)
-    dark_palette.setColor(QtGui.QPalette.BrightText, QtCore.Qt.red)
-    dark_palette.setColor(QtGui.QPalette.Link, QtGui.QColor(42, 130, 218))
-    dark_palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor(42, 130, 218))
-    dark_palette.setColor(QtGui.QPalette.HighlightedText, QtCore.Qt.black)
-
-    app.setPalette(dark_palette)
-
-    try:
-        with open(STYLE_PATH, 'r') as f:
-            styleString = f.read()
-            app.setStyleSheet(styleString)
-    except:
-        pass
-
-    settings = QtCore.QSettings(SETTINGS_PATH, QtCore.QSettings.IniFormat)
-
-    instance = PyFlow()
-    instance.applySettings(settings)
-    instance.startMainLoop()
-
-    app.setActiveWindow(instance)
-    instance.show()
-
-    try:
-        sys.exit(app.exec_())
-    except Exception as e:
-        print(e)

@@ -6,18 +6,22 @@ The main idea is to describe argument types and default values.
 
 Using this information it becomes possible to create pins according to arguments types.
 """
-from inspect import getargspec
-from AGraphCommon import *
+try:
+    from inspect import getfullargspec as getargspec
+except:
+    from inspect import getargspec
+
+from PyFlow.Core.Common import *
 
 empty = {}
 
 
-## Turns function into a node
+# Turns function into a node
 # @param[in] func decorated function
-# @param[in] returns it can be tuple with [data type identifier](@ref PyFlow.Core.AGraphCommon.DataTypes) + default value, or None
+# @param[in] returns it can be tuple with [data type identifier](@ref PyFlow.Core.Common.DataTypes) + default value, or None
 # @param[in] meta dictionary with category path, keywords and any additional info
 # @param[in] nodeType determines wheter it is a Pure node or Callable. If Callable - input and output execution pins will be created
-# @sa [NodeTypes](@ref PyFlow.Core.AGraphCommon.NodeTypes) FunctionLibraries
+# @sa [NodeTypes](@ref PyFlow.Core.Common.NodeTypes) FunctionLibraries
 def IMPLEMENT_NODE(func=None, returns=empty, meta={'Category': 'Default', 'Keywords': []}, nodeType=NodeTypes.Pure):
     def wrapper(func):
         func.__annotations__ = getattr(func, '__annotations__', {})
@@ -32,26 +36,10 @@ def IMPLEMENT_NODE(func=None, returns=empty, meta={'Category': 'Default', 'Keywo
         defaults = func.__defaults__
         if defaults:
             spec = getargspec(func)
-
-            nanno = len(defaults)
-            for (i, name) in enumerate(spec.args[-nanno:]):
+            for (i, name) in enumerate(spec.args[-len(defaults):]):
                 if len(defaults[i]) < 1 or defaults[i][0] is empty:
                     continue
-                if defaults[i][0] == DataTypes.Reference:
-                    func.__annotations__[name] = defaults[i][1]
-                else:
-                    func.__annotations__[name] = defaults[i][0]
-
-            # defaults = tuple((d[1] for d in func.__defaults__ if len(d) > 1))
-            customDefaults = []
-            for d in func.__defaults__:
-                if len(d) > 1:
-                    if isinstance(d[1], tuple):
-                        customDefaults.append(d[1][1])
-                    else:
-                        customDefaults.append(d[1])
-            # func.__defaults__ = defaults or None
-            func.__defaults__ = tuple(customDefaults) or None
+                func.__annotations__[name] = defaults[i]
         return func
 
     if returns == empty:
@@ -59,12 +47,16 @@ def IMPLEMENT_NODE(func=None, returns=empty, meta={'Category': 'Default', 'Keywo
     return wrapper
 
 
-## Base class for all function libraries
+# Base class for all function libraries
 # some common utilities can be moved here in future
 class FunctionLibraryBase(object):
-    def __init__(self):
+    def __init__(self, packageName):
         super(FunctionLibraryBase, self).__init__()
-        self.__foos = inspect.getmembers(self, inspect.isfunction)
+        self.__foos = {}
+        for name, function in inspect.getmembers(self, inspect.isfunction):
+            function.__annotations__["packageName"] = packageName
+            function.__annotations__["lib"] = self.__class__.__name__
+            self.__foos[name] = function
 
     def getFunctions(self):
         return self.__foos
